@@ -39,3 +39,7 @@ python -m venv .venv
 ## 安全
 
 模擬器與策略**不直接連線機器人**。上機測試照規格書 §7 的安全流程，急停一律用 Driver Station。
+
+## 授權
+
+MIT，見 [LICENSE](LICENSE)。歡迎其他隊伍參考使用。
