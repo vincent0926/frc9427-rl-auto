@@ -127,8 +127,8 @@ class SwerveSoftware:
         robot_vx, robot_vy = field_to_robot(field_vx, field_vy, heading)
         omega = np.asarray(omega, dtype=np.float64)
 
-        # 速度與角速度都接近 0 → holdModules()：速度 0、角度維持上一個目標
-        idle = (robot_vx ** 2 + robot_vy ** 2 < 1e-6) & (np.abs(omega) < 1e-4)
+        # 速度與角速度都接近 0 → holdModules() → SwerveModule.stop()：目標角度 = 目前實際角度、速度 0
+        idle =(robot_vx ** 2 + robot_vy ** 2 < 1e-6) & (np.abs(omega) < 1e-4)
 
         speeds, angles = calculate_module_targets(robot_vx, robot_vy, omega, self.module_positions)
         speeds, _ = desaturate(speeds, p.max_module_speed_mps)
@@ -140,7 +140,7 @@ class SwerveSoftware:
 
         target_angle, target_speed = optimize_module(wanted_angle, wanted_speed, module_angles)
 
-        target_angle = np.where(idle[..., None], self.target_angle, target_angle)
+        target_angle = np.where(idle[..., None], module_angles, target_angle)
         target_speed = np.where(idle[..., None], 0.0, target_speed)
         self.target_angle = target_angle
         return target_angle, target_speed

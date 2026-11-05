@@ -17,12 +17,26 @@ FRC 9427 研究專題：用**強化學習（殘差策略）**讓 Swerve 自動�
 依模擬器設計文件 §11 的實作順序：
 
 - [x] 1. 機器人軟體移植（`rl_auto/sim/robot_software.py`）：座標轉換、模組目標、desaturate、模組最佳化、弧線里程計、PathPlanner 控制器
-- [ ] 2. PathPlanner 軌跡匯出（Java 工具）+ `trajectory.py`
+- [x] 2. PathPlanner 軌跡匯出（機器人專案的 `RlExportTest`）+ `trajectory.py`；Java 對照測試向量
 - [ ] 3. 理想物理（無打滑、無延遲）健全性檢查
 - [ ] 4. 馬達模型、輪胎打滑、載重轉移
 - [ ] 5. 感測模型（里程計漂移、視覺）
 - [ ] 6. 向量化環境 + 效能測試
 - [ ] 7. 理論健全性檢查
+
+## 機器人匯出資料
+
+`data/robot-export/` 由機器人專案的 `RlExportTest` 產生，**不要手改**：
+
+- `trajectories/*.csv`：每條 PathPlanner 路線用同一份 RobotConfig 生成的軌跡（5 ms 取樣）；`_summary.csv` 是各路線總時間
+- `vectors/*.csv`：SwerveMath 與 `SwerveModule.setTarget` 的輸入輸出，`tests/test_java_vectors.py` 用來確認 Python 移植跟 Java 一致
+
+機器人程式或路線改了之後重新匯出（在機器人專案資料夾，Git Bash）：
+
+```bash
+RL_EXPORT=1 ./gradlew test --offline --tests "*RlExportTest*" --rerun
+cp -r build/rl-export/* <這個專案>/data/robot-export/
+```
 
 ## 開發
 

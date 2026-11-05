@@ -118,13 +118,24 @@ def test_follow_path_caps_at_max_module_speed():
     np.testing.assert_allclose(angle, 0.0)
 
 
-def test_follow_path_idle_holds_previous_angle():
+def test_follow_path_idle_holds_current_angle():
+    # SwerveModule.stop()：targetAngleRad = 目前實際角度
     sw = SwerveSoftware(1)
     sw.follow_path(np.array([0.0]), np.array([1.0]), np.array([0.0]), np.array([0.0]), np.zeros((1, 4)))
-    held_angle = sw.target_angle.copy()
-    angle, speed = sw.follow_path(np.zeros(1), np.zeros(1), np.zeros(1), np.zeros(1), held_angle)
+    current = np.array([[0.3, 1.2, 1.5, 1.6]])
+    angle, speed = sw.follow_path(np.zeros(1), np.zeros(1), np.zeros(1), np.zeros(1), current)
     np.testing.assert_allclose(speed, 0.0)
-    np.testing.assert_allclose(angle, held_angle)
+    np.testing.assert_allclose(angle, current)
+
+
+def test_follow_path_slow_module_keeps_previous_target():
+    # 模組速度 < ModuleHoldSpeedMps → setTarget(上一個目標角度, 0)
+    sw = SwerveSoftware(1)
+    sw.follow_path(np.array([0.0]), np.array([1.0]), np.array([0.0]), np.array([0.0]), np.zeros((1, 4)))
+    previous = sw.target_angle.copy()
+    angle, speed = sw.follow_path(np.array([0.01]), np.zeros(1), np.zeros(1), np.zeros(1), previous)
+    np.testing.assert_allclose(speed, 0.0)
+    np.testing.assert_allclose(angle, previous)
 
 
 def test_follow_path_is_vectorized():
