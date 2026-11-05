@@ -178,8 +178,11 @@ class Odometry:
         self.prev_drive_position = drive_position.copy()
         self.prev_module_angle = module_angle.copy()
 
+        # 同 Java (2026-11-05 修正)：位移用週期中間的朝向轉到場地座標
+        last = self.pose[:, 2]
+        mid = (last + wrap_rad(heading - last) * 0.5)[:, None]
         h = heading[:, None]
-        fdx, fdy = robot_to_field(dx, dy, h)
+        fdx, fdy = robot_to_field(dx, dy, mid)
         self.module_field[..., 0] += fdx
         self.module_field[..., 1] += fdy
         off_x, off_y = robot_to_field(self.module_positions[:, 0], self.module_positions[:, 1], h)

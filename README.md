@@ -18,17 +18,29 @@ FRC 9427 研究專題：用**強化學習（殘差策略）**讓 Swerve 自動�
 
 - [x] 1. 機器人軟體移植（`rl_auto/sim/robot_software.py`）：座標轉換、模組目標、desaturate、模組最佳化、弧線里程計、PathPlanner 控制器
 - [x] 2. PathPlanner 軌跡匯出（機器人專案的 `RlExportTest`）+ `trajectory.py`；Java 對照測試向量
-- [ ] 3. 理想物理（無打滑、無延遲）健全性檢查
+- [x] 3. 理想物理（無打滑、無延遲）健全性檢查：`chassis.IdealPlant` + 閉迴路執行器 `rollout.PathFollower`
+  - 6 條路線全部跑完：最大橫向誤差 ≤ 4.7 cm、終點誤差 ≤ 1.4 cm、里程計誤差 < 0.5 mm
+  - 剩下的誤差來自機器人軟體本身（模組 cos 縮放、20 ms 離散週期），是 PathPlanner 基準的下限
+  - 過程中找到並修正機器人程式的里程計誤差（見下方「發現」）
 - [ ] 4. 馬達模型、輪胎打滑、載重轉移
 - [ ] 5. 感測模型（里程計漂移、視覺）
-- [ ] 6. 向量化環境 + 效能測試
+- [ ] 6. 向量化環境 + 效能測試（目前 1024 環境約 1.5 萬步/秒，目標 5 萬；瓶頸是每步對整條路線算橫向誤差）
 - [ ] 7. 理論健全性檢查
+
+## 發現（已回饋到機器人程式）
+
+| 日期 | 發現 | 處理 |
+|---|---|---|
+| 2026-11-05 | 模組速度上限 4.0 m/s 會截掉路線要求的 5.0 m/s，自動一路落後 | 改用理論上限 `MaxModuleSpeedMps ≈ 4.64` |
+| 2026-11-05 | PathPlanner `driveCurrentLimit` ≤ 80 A 時生成 0 秒的壞軌跡 | 維持 95 A，加常駐測試擋住 |
+| 2026-11-05 | 里程計用週期**結束**的朝向轉換位移，邊走邊轉時累積誤差（Blue3-3 約 6 cm，不打滑也會） | 改用週期中間朝向，誤差 < 0.5 mm |
+| 2026-11-05 | Blue3-1、Blue3-3 的起點速度設 4.0 m/s，但自動第一段 / 射擊後是從靜止開始 | 實機 FollowPathCommand 會重新生成，不影響實機；匯出工具改成照自動流程判斷 |
 
 ## 機器人匯出資料
 
 `data/robot-export/` 由機器人專案的 `RlExportTest` 產生，**不要手改**：
 
-- `trajectories/*.csv`：每條 PathPlanner 路線用同一份 RobotConfig 生成的軌跡（5 ms 取樣）；`_summary.csv` 是各路線總時間
+- `trajectories/*.csv`：每條 PathPlanner 路線用同一份 RobotConfig 生成的軌跡（5 ms 取樣）。自動的第一段或接在射擊後面的路線從靜止生成（同 FollowPathCommand），接在另一條路線後面的用理想軌跡；`_summary.csv` 有各路線總時間與是否從靜止開始
 - `vectors/*.csv`：SwerveMath 與 `SwerveModule.setTarget` 的輸入輸出，`tests/test_java_vectors.py` 用來確認 Python 移植跟 Java 一致
 
 機器人程式或路線改了之後重新匯出（在機器人專案資料夾，Git Bash）：

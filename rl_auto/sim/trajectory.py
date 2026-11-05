@@ -81,6 +81,12 @@ class Trajectory:
             omega=np.interp(tau, self.t, self.omega) * scale,
         )
 
+    def lateral_from_end_line(self, px, py):
+        """到「最後一段延長線」的垂直距離。終點速度不為 0 的路線，車子會衝過終點，過終點後的偏移只算橫向。"""
+        dx, dy = self.x[-1] - self.x[-2], self.y[-1] - self.y[-2]
+        norm = np.hypot(dx, dy)
+        return np.abs((np.asarray(px) - self.x[-1]) * dy - (np.asarray(py) - self.y[-1]) * dx) / norm
+
     def cross_track(self, px, py):
         """點到整條路線折線的最短距離與該處的路線進度 (弧長，m)。輸入 (N,)，輸出兩個 (N,)。
 
