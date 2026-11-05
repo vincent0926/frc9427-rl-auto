@@ -34,6 +34,22 @@ class RobotParams:
     drive_stator_limit_a: float = 60.0
     drive_ks_v: float = 0.18  # Constants.Swerve.DriveS
 
+    # ---- TalonFX 驅動速度迴路 (VelocityVoltage，機器人實際設定；換成每 m/s) ----
+    drive_kv_v_per_mps: float = 2.35  # DriveV = 2.35·周長 V/rps → 2.35 V/(m/s)，比理論 1.98 高約 19%
+    drive_kp_v_per_mps: float = 0.0021  # DriveP = 0.0021·周長 V/rps → 幾乎 0，速度主要靠前饋
+
+    # ---- 轉向 (PositionVoltage，以一階 + 轉速上限近似) ----
+    steer_time_constant_s: float = 0.02
+
+    # ---- 實體參數 (無實機數據：理論值或估計，交給領域隨機化) ----
+    cg_height_m: float = 0.25
+    wheel_equivalent_mass_kg: float = 0.8  # 輪子 + 反射轉子慣量折算到輪面的等效質量 (估計)
+    tire_slip_saturation_mps: float = 0.05  # 約多少滑移速度摩擦力就飽和
+    gear_efficiency: float = 0.95
+    drivetrain_kv_excess: float = 0.05  # 黏滯損耗讓實際需要的 kV 比理論多幾 % (估計，隨機化 0–10%)
+    battery_open_circuit_v: float = 12.5
+    battery_resistance_ohm: float = 0.02
+
     # ---- 控制 ----
     cycle_time_s: float = 0.02  # Constants.CycleTimeSec
     joystick_max_speed_mps: float = 4.0  # MaxDriveVelocityMps (只給遙控用)
@@ -66,6 +82,34 @@ class RobotParams:
             * self.speed_limit_headroom
             / self.drive_volts_per_mps
         )
+
+    @property
+    def motor_resistance_ohm(self) -> float:
+        return 12.0 / self.motor_stall_current_a
+
+    @property
+    def motor_kt_nm_per_a(self) -> float:
+        return self.motor_stall_torque_nm / self.motor_stall_current_a
+
+    @property
+    def force_per_amp_n(self) -> float:
+        """每安培馬達電流在輪面產生的力 (未扣齒輪效率)。"""
+        return self.motor_kt_nm_per_a * self.drive_gear_ratio / self.wheel_radius_m
+
+    @property
+    def coulomb_friction_n(self) -> float:
+        """驅動系的庫倫摩擦 (輪面力)：由 kS 推算，kS 電壓剛好推動這個摩擦。"""
+        return self.drive_ks_v / self.motor_resistance_ohm * self.force_per_amp_n * self.gear_efficiency
+
+    @property
+    def viscous_friction_n_per_mps(self) -> float:
+        """驅動系黏滯摩擦 (輪面力)：讓等速時需要的電壓比理論 kV 多 drivetrain_kv_excess (預設 5%)。
+
+        機器人設定的 kV (2.35) 比理論 (1.98) 高 19%。若全部當成摩擦，等速 4.6 m/s 時整台車阻力約 440 N、
+        電池掉到 8.7 V，不合理；所以只取一部分，其餘代表「設定的 kV 偏高，車子會比命令跑得快」。
+        """
+        extra_v_per_mps = self.drive_volts_per_mps * self.drivetrain_kv_excess
+        return extra_v_per_mps / self.motor_resistance_ohm * self.force_per_amp_n * self.gear_efficiency
 
     @property
     def module_positions(self) -> np.ndarray:

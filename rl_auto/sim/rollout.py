@@ -42,10 +42,17 @@ class PathFollower:
         self.time = np.zeros(n_envs)
 
     def reset(self, start_offset=None):
-        """起點 = 路線起點 (+ 選用的真實位姿誤差 (N, 3))。里程計以「路線起點」重置，同 AutoBuilder.resetPose。"""
+        """起點 = 路線起點 (+ 選用的真實位姿誤差 (N, 3))。里程計以「路線起點」重置，同 AutoBuilder.resetPose。
+
+        路線起點速度不為 0 (接在另一條路線後面) 時，車子一開始就以參考速度在動。
+        """
         start = np.tile(self.traj.start_pose, (self.n_envs, 1))
         true_start = start + (start_offset if start_offset is not None else 0.0)
         self.plant.reset(true_start)
+        ref = self.traj.sample(np.zeros(self.n_envs))
+        start_velocity = np.stack([ref.vx, ref.vy, ref.omega], axis=1)
+        if np.any(np.abs(start_velocity) > 1e-6):
+            self.plant.set_motion(start_velocity)
         self.software.reset()
         self.odometry.reset(start, self.plant.drive_position, self.plant.module_angle)
         self.tau[:] = 0.0
