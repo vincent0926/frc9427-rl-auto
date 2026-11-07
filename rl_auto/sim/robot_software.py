@@ -191,3 +191,17 @@ class Odometry:
         self.pose[:, 2] = heading
         self._refit(np.ones(self.pose.shape[0], dtype=bool))
         return self.pose
+
+
+def chassis_from_modules(speeds, angles, module_positions):
+    """各模組實際速度與角度 → 機器人座標底盤速度 (vx, vy, ω)，最小平方 (同 Swerve.getRobotRelativeSpeeds)。"""
+    a = np.zeros((8, 3))
+    for i, (px, py) in enumerate(module_positions):
+        a[2 * i] = [1.0, 0.0, -py]
+        a[2 * i + 1] = [0.0, 1.0, px]
+    pinv = np.linalg.pinv(a)
+    wheel = np.empty(speeds.shape[:-1] + (8,))
+    wheel[..., 0::2] = speeds * np.cos(angles)
+    wheel[..., 1::2] = speeds * np.sin(angles)
+    out = wheel @ pinv.T
+    return out[..., 0], out[..., 1], out[..., 2]

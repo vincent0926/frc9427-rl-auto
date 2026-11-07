@@ -47,6 +47,17 @@ class Trajectory:
         seg = np.hypot(np.diff(self.x), np.diff(self.y))
         self.arc_length = np.concatenate([[0.0], np.cumsum(seg)])
 
+        # 算橫向誤差用的折線：依弧長每 2 cm 重新取樣 (原始點在低速時很密、高速時較疏)
+        n_pts = max(int(np.ceil(self.arc_length[-1] / self.CT_SPACING_M)) + 1, 2)
+        s = np.linspace(0.0, self.arc_length[-1], n_pts)
+        keep = np.concatenate([[True], np.diff(self.arc_length) > 0])
+        self._ct_s = s
+        self._ct_x = np.interp(s, self.arc_length[keep], self.x[keep])
+        self._ct_y = np.interp(s, self.arc_length[keep], self.y[keep])
+
+    CT_SPACING_M = 0.02
+    CT_WINDOW = 15  # 局部搜尋前後各 15 段 = ±0.3 m；hint 每週期更新，車子一個週期最多走約 0.1 m
+
     @classmethod
     def load(cls, name: str, data_dir: Path = DATA_DIR) -> "Trajectory":
         data = np.genfromtxt(data_dir / f"{name}.csv", delimiter=",", names=True)
@@ -87,23 +98,30 @@ class Trajectory:
         norm = np.hypot(dx, dy)
         return np.abs((np.asarray(px) - self.x[-1]) * dy - (np.asarray(py) - self.y[-1]) * dx) / norm
 
-    def cross_track(self, px, py):
-        """點到整條路線折線的最短距離與該處的路線進度 (弧長，m)。輸入 (N,)，輸出兩個 (N,)。
+    def cross_track(self, px, py, hint=None):
+        """點到路線折線的最短距離與該處的路線進度 (弧長，m)。輸入 (N,)，輸出 (距離, 進度, 段索引)。
 
         用來判定「偏線」(獎勵與終止條件)，跟參考時間無關：只看車子離路線多遠。
+        hint = 上一次回傳的段索引 (N,)：只在附近 ±CT_WINDOW 段搜尋，快很多，也不會在路線
+        繞回自己附近時跳到另一段。hint=None 時整條搜尋。
         """
         px = np.asarray(px, dtype=np.float64)[:, None]
         py = np.asarray(py, dtype=np.float64)[:, None]
-        ax, ay = self.x[:-1], self.y[:-1]
-        dx, dy = np.diff(self.x), np.diff(self.y)
+        n_seg = len(self._ct_x) - 1
+        if hint is None:
+            idx = np.broadcast_to(np.arange(n_seg), (px.shape[0], n_seg))
+        else:
+            offsets = np.arange(-self.CT_WINDOW, self.CT_WINDOW + 1)
+            idx = np.clip(np.asarray(hint)[:, None] + offsets, 0, n_seg - 1)
+        ax, ay = self._ct_x[idx], self._ct_y[idx]
+        dx, dy = self._ct_x[idx + 1] - ax, self._ct_y[idx + 1] - ay
         seg_len_sq = dx * dx + dy * dy
         safe = np.where(seg_len_sq > 0.0, seg_len_sq, 1.0)
         u = np.clip(((px - ax) * dx + (py - ay) * dy) / safe, 0.0, 1.0)
         u = np.where(seg_len_sq > 0.0, u, 0.0)
-        cx = ax + u * dx
-        cy = ay + u * dy
-        dist = np.hypot(px - cx, py - cy)
+        dist = np.hypot(px - (ax + u * dx), py - (ay + u * dy))
         best = np.argmin(dist, axis=1)
         rows = np.arange(px.shape[0])
-        progress = self.arc_length[best] + u[rows, best] * np.sqrt(seg_len_sq[best])
-        return dist[rows, best], progress
+        seg = idx[rows, best]
+        progress = self._ct_s[seg] + u[rows, best] * np.sqrt(seg_len_sq[rows, best])
+        return dist[rows, best], progress, seg

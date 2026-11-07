@@ -71,10 +71,11 @@ class PoseHistory:
 
     def sample(self, t):
         """回傳 (x, y, 狀態)：狀態 0 = 範圍內、-1 = 比最舊還早、+1 = 比最新還新或沒有紀錄。"""
-        order = np.argsort(self.times, axis=1)
-        times = np.take_along_axis(self.times, order, axis=1)
-        xs = np.take_along_axis(self.xs, order, axis=1)
-        ys = np.take_along_axis(self.ys, order, axis=1)
+        # 環形緩衝區所有環境同步寫入，從 head 開始繞一圈就是由舊到新 (被清掉的是 -inf，排在最前面)
+        order = (self.head + np.arange(self.capacity)) % self.capacity
+        times = self.times[:, order]
+        xs = self.xs[:, order]
+        ys = self.ys[:, order]
         valid = np.isfinite(times)
         oldest = np.where(valid.any(axis=1), np.min(np.where(valid, times, np.inf), axis=1), np.inf)
         newest = np.max(times, axis=1)
@@ -152,9 +153,11 @@ class VisionCamera:
         self.pending_xy = np.zeros((n_envs, 2))
         self.capture_time = np.zeros(n_envs)
 
-    def reset(self):
-        self.next_capture = self.rng.uniform(0.0, self.period)
-        self.pending[:] = False
+    def reset(self, mask=None):
+        """環境時間歸零時呼叫：第一張畫面的時間隨機落在一個週期內。"""
+        mask = np.ones(self.n, dtype=bool) if mask is None else mask
+        self.next_capture[mask] = self.rng.uniform(0.0, self.period)[mask]
+        self.pending[mask] = False
 
     def update(self, time, true_pose):
         """拍攝新畫面；回傳這個週期送達的 (x, y, 拍攝時間, mask)。"""
@@ -179,8 +182,11 @@ class Gyro:
         self.strength = _per_env(params.gyro_drift_rad_per_sqrt_s, n_envs)
         self.offset = np.zeros(n_envs)
 
-    def reset(self):
-        self.offset[:] = 0.0
+    def reset(self, mask=None):
+        if mask is None:
+            self.offset[:] = 0.0
+        else:
+            self.offset[mask] = 0.0
 
     def read(self, true_heading, dt):
         self.offset += self.rng.normal(size=self.offset.shape) * self.strength * np.sqrt(dt)
@@ -198,9 +204,10 @@ class CommandDelay:
         self.speed = np.zeros((self.size, n_envs, 4))
         self.head = 0
 
-    def reset(self, current_angle):
-        self.angle[:] = current_angle[None]
-        self.speed[:] = 0.0
+    def reset(self, current_angle, mask=None):
+        mask = np.ones(self.n, dtype=bool) if mask is None else mask
+        self.angle[:, mask] = current_angle[mask][None]
+        self.speed[:, mask] = 0.0
 
     def push(self, angle, speed):
         self.head = (self.head + 1) % self.size

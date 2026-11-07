@@ -55,6 +55,31 @@ def test_heading_interpolates_across_pi():
 
 def test_cross_track_and_progress():
     traj = straight()
-    dist, progress = traj.cross_track(np.array([1.0, 2.5, 5.0]), np.array([0.0, -0.3, 0.0]))
+    dist, progress, seg = traj.cross_track(np.array([1.0, 2.5, 5.0]), np.array([0.0, -0.3, 0.0]))
     np.testing.assert_allclose(dist, [0.0, 0.3, 1.0], atol=1e-12)
     np.testing.assert_allclose(progress, [1.0, 2.5, 4.0], atol=1e-12)
+
+
+def test_local_cross_track_matches_full_search():
+    traj = Trajectory.load("Blue3-3")
+    rng = np.random.default_rng(0)
+    # 路線上隨機點 + 小偏移；用正確附近的段當 hint
+    s = rng.uniform(0, traj.length, 200)
+    px = np.interp(s, traj._ct_s, traj._ct_x) + rng.normal(0, 0.1, 200)
+    py = np.interp(s, traj._ct_s, traj._ct_y) + rng.normal(0, 0.1, 200)
+    hint = (s / traj.CT_SPACING_M).astype(int)
+    full = traj.cross_track(px, py)
+    local = traj.cross_track(px, py, hint=hint)
+    # 整條搜尋可能找到路線「另一段」更近 (路線繞回自己附近)；只比對最近段落在搜尋窗內的點
+    nearby = np.abs(full[2] - hint) <= traj.CT_WINDOW
+    assert nearby.mean() > 0.9
+    np.testing.assert_allclose(local[0][nearby], full[0][nearby], atol=1e-9)
+    assert np.all(local[0] >= full[0] - 1e-12)
+
+
+def test_local_cross_track_does_not_jump_on_loops():
+    # Blue1-3 從起點出發又回到起點：剛出發時不能被算成「快到終點」
+    traj = Trajectory.load("Blue1-3")
+    x0, y0 = traj.x[0], traj.y[0]
+    _, progress, _ = traj.cross_track(np.array([x0]), np.array([y0]), hint=np.array([0]))
+    assert progress[0] < 0.1

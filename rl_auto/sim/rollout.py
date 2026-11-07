@@ -56,32 +56,35 @@ class PathFollower:
         self.prev_est_heading = np.zeros(n_envs)
         self.vision_applied = np.zeros(n_envs, dtype=int)  # 每個環境套用了幾筆視覺 (分析用)
 
-    def reset(self, start_offset=None):
-        """起點 = 路線起點 (+ 選用的真實位姿誤差 (N, 3))。里程計以「路線起點」重置，同 AutoBuilder.resetPose。
+    def reset(self, mask=None, start_offset=None):
+        """重置 mask 指定的環境 (預設全部)。起點 = 路線起點 (+ 選用的真實位姿誤差 (N, 3))。
+        里程計以「路線起點」重置，同 AutoBuilder.resetPose。
 
         路線起點速度不為 0 (接在另一條路線後面) 時，車子一開始就以參考速度在動。
         """
-        start = np.tile(self.traj.start_pose, (self.n_envs, 1))
+        n = self.n_envs
+        mask = np.ones(n, dtype=bool) if mask is None else np.asarray(mask, dtype=bool)
+        start = np.tile(self.traj.start_pose, (n, 1))
         true_start = start + (start_offset if start_offset is not None else 0.0)
-        self.plant.reset(true_start)
-        ref = self.traj.sample(np.zeros(self.n_envs))
+        self.plant.reset(true_start, mask)
+        ref = self.traj.sample(np.zeros(n))
         start_velocity = np.stack([ref.vx, ref.vy, ref.omega], axis=1)
         if np.any(np.abs(start_velocity) > 1e-6):
-            self.plant.set_motion(start_velocity)
-        self.software.reset()
-        self.odometry.reset(start, self.plant.drive_position, self.plant.module_angle)
+            self.plant.set_motion(start_velocity, mask)
+        self.software.reset(mask)
+        self.odometry.reset(start, self.plant.drive_position, self.plant.module_angle, mask)
         if self.sensors is not None:
-            # resetPose 把陀螺儀朝向設成路線起點朝向；之後的漂移從 0 開始累積
-            self.gyro.reset()
-            self.gyro.offset[:] = wrap_rad(start[:, 2] - true_start[:, 2])
-            self.delay.reset(self.plant.module_angle)
-            self.fusion.reset()
+            # resetPose 把陀螺儀朝向設成路線起點朝向；起點擺歪的誤差變成陀螺儀偏移，之後再加上漂移
+            self.gyro.reset(mask)
+            self.gyro.offset[mask] = wrap_rad(start[mask, 2] - true_start[mask, 2])
+            self.delay.reset(self.plant.module_angle, mask)
+            self.fusion.reset(mask)
             if self.camera is not None:
-                self.camera.reset()
-        self.prev_est_heading = start[:, 2].copy()
-        self.vision_applied[:] = 0
-        self.tau[:] = 0.0
-        self.time[:] = 0.0
+                self.camera.reset(mask)
+        self.prev_est_heading[mask] = start[mask, 2]
+        self.vision_applied[mask] = 0
+        self.tau[mask] = 0.0
+        self.time[mask] = 0.0
 
     def step(self, time_scale=1.0, residual=None):
         """前進一個控制週期。time_scale: (N,) 時間縮放 s；residual: (N, 3) 場地座標 Δvx, Δvy, Δω。"""
@@ -133,6 +136,7 @@ class PathFollower:
         finish = np.full(n, np.nan)
         end_error = np.full(n, np.nan)
         end_heading = np.full(n, np.nan)
+        ct_hint = self.traj.cross_track(self.plant.pose[:, 0], self.plant.pose[:, 1])[2]
         max_ct = np.zeros(n)
         max_odo = np.zeros(n)
         log = {"t": [], "true": [], "est": [], "ref": []} if record else {}
@@ -143,7 +147,7 @@ class PathFollower:
             true_before = self.plant.pose.copy()
             est = self.step()
             true = self.plant.pose
-            ct, progress = self.traj.cross_track(true[:, 0], true[:, 1])
+            ct, progress, ct_hint = self.traj.cross_track(true[:, 0], true[:, 1], ct_hint)
             # 衝過終點 (進度已到路長) 的部分不是偏線，只算對最後一段延長線的橫向距離
             past_end = progress >= self.traj.length - 1e-3
             ct = np.where(past_end, self.traj.lateral_from_end_line(true[:, 0], true[:, 1]), ct)
