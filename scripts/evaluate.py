@@ -16,17 +16,19 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from rl_auto.sim.env import ACTION_DIM, OBS_DIM, SwerveAutoEnv, evaluate_policy  # noqa: E402
+from rl_auto.sim.env import ACTION_DIM, SwerveAutoEnv, evaluate_policy, obs_dim  # noqa: E402
 from rl_auto.train.ppo import ActorCritic, RunningNorm  # noqa: E402
 
 
 def load_policy(checkpoint: Path):
     data = torch.load(checkpoint, weights_only=False)
     cfg = data["config"]
-    model = ActorCritic(OBS_DIM, ACTION_DIM, cfg["hidden"], cfg["init_log_std"])
+    version = cfg.get("obs_version", 1)
+    dim = obs_dim(version)
+    model = ActorCritic(dim, ACTION_DIM, cfg["hidden"], cfg["init_log_std"])
     model.load_state_dict(data["model"])
     model.eval()
-    norm = RunningNorm(OBS_DIM)
+    norm = RunningNorm(dim)
     norm.mean, norm.var = data["norm_mean"], data["norm_var"]
 
     def policy(obs):
@@ -43,6 +45,7 @@ def main():
     parser.add_argument("--episodes", type=int, default=1024)
     parser.add_argument("--seed", type=int, default=20_000)
     parser.add_argument("--randomize", type=float, default=1.0)
+    parser.add_argument("--disturbance", type=float, default=1.0, help="碰撞、推擠、摩擦不均、壓球、卡球強度 0–1")
     args = parser.parse_args()
 
     policy, cfg = load_policy(args.checkpoint)
@@ -51,20 +54,21 @@ def main():
     zero = lambda o: np.zeros((o.shape[0], ACTION_DIM))
     results = {}
     for label, pol in (("PathPlanner (B1)", zero), ("RL 策略", policy)):
-        env = SwerveAutoEnv(path, n_envs=n, seed=args.seed, randomize_scale=args.randomize)
+        env = SwerveAutoEnv(path, n_envs=n, seed=args.seed, randomize_scale=args.randomize,
+                            disturbance_scale=args.disturbance, obs_version=cfg.get("obs_version", 1))
         results[label] = evaluate_policy(env, pol, args.episodes)
 
     b, r = results["PathPlanner (B1)"], results["RL 策略"]
-    print(f"路線 {path}（訓練路線 {cfg['path']}），{args.episodes} 回合，隨機化 {args.randomize}")
-    print(f"{'':16s}{'成功率':>8s}{'時間(s)':>10s}{'偏線p95(cm)':>13s}{'終點誤差(cm)':>13s}")
+    print(f"路線 {path}（訓練路線 {cfg['path']}），{args.episodes} 回合，隨機化 {args.randomize}，干擾 {args.disturbance}")
+    print(f"{'':16s}{'成功率':>8s}{'時間(s)':>10s}{'偏線p95(cm)':>13s}{'終點誤差(cm)':>13s}{'撞牆/HUB':>10s}")
     for label, x in results.items():
         print(f"{label:16s}{x['success_rate']*100:7.1f}%{x['mean_time_success']:10.2f}"
-              f"{x['max_cross_track_p95']*100:13.1f}{x['mean_end_error_success']*100:13.1f}")
+              f"{x['max_cross_track_p95']*100:13.1f}{x['mean_end_error_success']*100:13.1f}{x['contact_rate']*100:9.1f}%")
     saved = (b["mean_time_success"] - r["mean_time_success"]) / b["mean_time_success"] * 100
     print(f"省下時間 {saved:.1f}%，成功率 {(r['success_rate'] - b['success_rate'])*100:+.1f} 點")
-    out = args.checkpoint.parent / f"report_{path}.json"
+    out = args.checkpoint.parent / f"report_{path}_d{args.disturbance:g}.json"
     out.write_text(json.dumps({"path": path, "train_path": cfg["path"], "episodes": args.episodes,
-                               "randomize": args.randomize, "results": results,
+                               "randomize": args.randomize, "disturbance": args.disturbance, "results": results,
                                "time_saved_percent": saved}, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"已存 {out}")
 

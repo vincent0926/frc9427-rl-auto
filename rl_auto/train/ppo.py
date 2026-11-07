@@ -19,7 +19,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from ..sim.env import ACTION_DIM, OBS_DIM, SwerveAutoEnv, evaluate_policy
+from ..sim.env import ACTION_DIM, SwerveAutoEnv, evaluate_policy, obs_dim
 
 RUNS_DIR = Path(__file__).resolve().parents[2] / "runs"
 
@@ -63,6 +63,10 @@ class TrainConfig:
     randomize_start: float = 0.3  # 隨機化範圍從 30% 開始
     randomize_full_at: float = 0.5  # 到 50% 時用完整範圍
     residual_full_at: float = 0.7  # 速度修正在 30%→70% 之間從 0 開到 1
+    disturbance_start: float = 0.15  # 干擾 (碰撞、推擠、摩擦不均、壓球、卡球) 從 15% 開始出現
+    disturbance_full_at: float = 0.6  # 到 60% 時完整強度
+    eval_disturbance: float = 1.0  # 評估時的干擾強度 (固定，曲線才能比較)
+    obs_version: int = 2  # 1 = v1 模型的觀測；2 = 加上加速度計與打滑指標
     eval_every: int = 10  # 每幾次更新評估一次
     eval_episodes: int = 256
     seed: int = 0
@@ -110,6 +114,11 @@ class ActorCritic(nn.Module):
         return self.critic(obs).squeeze(-1)
 
 
+def disturbance_schedule(cfg: TrainConfig, progress: float) -> float:
+    span = max(cfg.disturbance_full_at - cfg.disturbance_start, 1e-9)
+    return float(np.clip((progress - cfg.disturbance_start) / span, 0.0, 1.0))
+
+
 def schedule(cfg: TrainConfig, progress: float) -> tuple[float, float, int]:
     """回傳 (隨機化範圍, 殘差比例, 階段)。progress = 已訓練步數 / 總步數。"""
     if progress < cfg.randomize_full_at:
@@ -133,10 +142,12 @@ class Trainer:
         (self.dir / "config.json").write_text(json.dumps(asdict(cfg), indent=2), encoding="utf-8")
 
         rand, residual, _ = schedule(cfg, 0.0)
-        self.env = SwerveAutoEnv(cfg.path, cfg.n_envs, seed=cfg.seed, randomize_scale=rand, residual_scale=residual)
-        self.model = ActorCritic(OBS_DIM, ACTION_DIM, cfg.hidden, cfg.init_log_std)
+        self.obs_dim = obs_dim(cfg.obs_version)
+        self.env = SwerveAutoEnv(cfg.path, cfg.n_envs, seed=cfg.seed, randomize_scale=rand, residual_scale=residual,
+                                 disturbance_scale=disturbance_schedule(cfg, 0.0), obs_version=cfg.obs_version)
+        self.model = ActorCritic(self.obs_dim, ACTION_DIM, cfg.hidden, cfg.init_log_std)
         self.opt = torch.optim.Adam(self.model.parameters(), lr=cfg.lr, eps=1e-5)
-        self.norm = RunningNorm(OBS_DIM)
+        self.norm = RunningNorm(self.obs_dim)
         self.steps = 0
         self.update = 0
         self.best_score = -math.inf
@@ -174,10 +185,12 @@ class Trainer:
 
         while self.steps < cfg.total_steps:
             rand, residual, stage = schedule(cfg, self.steps / cfg.total_steps)
+            dist = disturbance_schedule(cfg, self.steps / cfg.total_steps)
             self.env.randomizer.scale = rand
             self.env.residual_scale = residual
+            self.env.disturbance_scale = dist
 
-            buf_obs = np.zeros((t_len, n, OBS_DIM), np.float32)
+            buf_obs = np.zeros((t_len, n, self.obs_dim), np.float32)
             buf_act = np.zeros((t_len, n, ACTION_DIM), np.float32)
             buf_logp = np.zeros((t_len, n), np.float32)
             buf_rew = np.zeros((t_len, n), np.float32)
@@ -225,7 +238,7 @@ class Trainer:
                 adv[t] = last
             ret = adv + buf_val[:t_len]
 
-            stats = self.optimize(buf_obs.reshape(-1, OBS_DIM), buf_act.reshape(-1, ACTION_DIM),
+            stats = self.optimize(buf_obs.reshape(-1, self.obs_dim), buf_act.reshape(-1, ACTION_DIM),
                                   buf_logp.reshape(-1), adv.reshape(-1), ret.reshape(-1))
             self.steps += n * t_len
             self.update += 1
@@ -235,14 +248,14 @@ class Trainer:
             rec = {k: (float(np.mean(v)) if v else None) for k, v in self.recent.items()}
             self.recent = {k: [] for k in self.recent}
             self.log({"type": "train", "update": self.update, "steps": self.steps, "sps": sps, "stage": stage,
-                      "randomize_scale": rand, "residual_scale": residual,
+                      "randomize_scale": rand, "residual_scale": residual, "disturbance_scale": dist,
                       "episode_return": rec["return"], "success_rate": rec["success"],
                       "episode_time": rec["time"], "max_cross_track": rec["max_ct"],
                       "action_std": float(self.model.log_std.detach().exp().mean()),
                       "rollout_seconds": rollout_time, **stats})
             eta = (cfg.total_steps - self.steps) / max(sps, 1.0)
             self.status("training", stage=stage, sps=sps, eta_seconds=eta,
-                        randomize_scale=rand, residual_scale=residual)
+                        randomize_scale=rand, residual_scale=residual, disturbance_scale=dist)
             if self.update % cfg.eval_every == 0:
                 self.evaluate()
 
@@ -287,13 +300,15 @@ class Trainer:
     # ---- 評估 ---------------------------------------------------------------
     def _eval_env(self, residual_scale=1.0):
         return SwerveAutoEnv(self.cfg.path, n_envs=self.cfg.eval_episodes, seed=10_000,
-                             randomize_scale=1.0, residual_scale=residual_scale)
+                             randomize_scale=1.0, residual_scale=residual_scale,
+                             disturbance_scale=self.cfg.eval_disturbance, obs_version=self.cfg.obs_version)
 
     def evaluate_baseline(self) -> dict:
         """B1 = 目前的 PathPlanner (動作全 0)，在跟策略評估一樣的種子與完整隨機化下跑。"""
         env = self._eval_env()
         result = evaluate_policy(env, lambda o: np.zeros((o.shape[0], ACTION_DIM)), self.cfg.eval_episodes)
-        nominal = evaluate_policy(SwerveAutoEnv(self.cfg.path, 4, seed=1, randomize_scale=0.0),
+        nominal = evaluate_policy(SwerveAutoEnv(self.cfg.path, 4, seed=1, randomize_scale=0.0,
+                                                obs_version=self.cfg.obs_version),
                                   lambda o: np.zeros((o.shape[0], ACTION_DIM)), 4)
         result["nominal_time"] = nominal["mean_time_success"]
         result["reference_time"] = float(env.traj.total_time)
@@ -318,7 +333,9 @@ class Trainer:
 
     def record_trace(self, filename, policy, residual_scale=1.0):
         """用標準參數 (不隨機) 跑一次，記下真實/估計位置與時間縮放，給監控網頁畫場地圖。"""
-        env = SwerveAutoEnv(self.cfg.path, n_envs=1, seed=3, randomize_scale=0.0, residual_scale=residual_scale)
+        # 標準參數、但有干擾 (固定種子 → 每次評估同一組碰撞/壓球，軌跡圖可以比較)
+        env = SwerveAutoEnv(self.cfg.path, n_envs=1, seed=3, randomize_scale=0.0, residual_scale=residual_scale,
+                            disturbance_scale=self.cfg.eval_disturbance, obs_version=self.cfg.obs_version)
         obs = env.reset()
         trace = {"t": [], "x": [], "y": [], "est_x": [], "est_y": [], "time_scale": [], "speed": [],
                  "cross_track": []}
@@ -367,7 +384,8 @@ def export_policy(model: ActorCritic, norm: RunningNorm, out: Path, cfg: TrainCo
         "schemaVersion": 1,
         "path": cfg.path,
         "activation": "tanh",
-        "obs_dim": OBS_DIM,
+        "obs_dim": int(norm.mean.shape[0]),
+        "obs_version": cfg.obs_version,
         "action_dim": ACTION_DIM,
         "obs_mean": norm.mean.round(7).tolist(),
         "obs_std": np.sqrt(norm.var + 1e-8).round(7).tolist(),

@@ -6,8 +6,9 @@ import numpy as np
 import pytest
 import torch
 
-from rl_auto.sim.env import ACTION_DIM, OBS_DIM
-from rl_auto.train.ppo import ActorCritic, RunningNorm, TrainConfig, export_policy, schedule
+from rl_auto.sim.env import ACTION_DIM, OBS_DIM, OBS_DIM_V2
+from rl_auto.train.ppo import (ActorCritic, RunningNorm, TrainConfig, disturbance_schedule, export_policy,
+                               schedule)
 
 
 def test_running_norm_matches_batch_statistics():
@@ -58,3 +59,20 @@ def test_exported_policy_matches_torch(tmp_path):
     with torch.no_grad():
         expected = model.dist(torch.as_tensor(norm(obs), dtype=torch.float32)).mean.numpy()
     np.testing.assert_allclose(x, expected, atol=1e-4)
+
+
+def test_disturbance_schedule_ramps():
+    cfg = TrainConfig()
+    assert disturbance_schedule(cfg, 0.0) == 0.0
+    assert disturbance_schedule(cfg, cfg.disturbance_start) == 0.0
+    assert 0.0 < disturbance_schedule(cfg, 0.4) < 1.0
+    assert disturbance_schedule(cfg, cfg.disturbance_full_at) == 1.0
+
+
+def test_exported_policy_records_obs_version(tmp_path):
+    model = ActorCritic(OBS_DIM_V2, ACTION_DIM, 64, -1.0)
+    norm = RunningNorm(OBS_DIM_V2)
+    out = tmp_path / "p.json"
+    export_policy(model, norm, out, TrainConfig(obs_version=2))
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["obs_dim"] == OBS_DIM_V2 and data["obs_version"] == 2

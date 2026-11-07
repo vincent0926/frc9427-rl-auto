@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 
 from .params import DEFAULT_PARAMS, RobotParams
-from .robot_software import robot_to_field, wrap_rad
+from .robot_software import field_to_robot, robot_to_field, wrap_rad
 
 
 class IdealPlant:
@@ -149,6 +149,11 @@ class RealisticPlant:
         self.current = np.zeros((n, 4))  # 驅動馬達 stator 電流
         self.battery_voltage = self.v_oc.copy()
         self.slip = np.zeros((n, 4))  # 滑移速度大小 (分析用)
+        # 干擾 (disturbances.py)：每輪摩擦倍率 (地毯區塊、輪胎磨耗、壓到球)、外力 (碰撞、推擠、卡球阻力)
+        self.mu_scale = np.ones((n, 4))
+        self.ext_force = np.zeros((n, 2))  # 場地座標 (N)
+        self.ext_torque = np.zeros(n)  # (N·m)
+        self.contact = None  # 選用：contact(plant) → (fx, fy, torque)，每個子步呼叫 (牆、HUB)
 
     # 介面同 IdealPlant -------------------------------------------------------
     @property
@@ -165,8 +170,9 @@ class RealisticPlant:
             mask = np.ones(self.n_envs, dtype=bool)
         self.pose[mask] = pose[mask] if np.ndim(pose) == 2 else pose
         for arr in (self.velocity, self.accel_robot, self.module_angle, self.wheel_speed,
-                    self.drive_position, self.current, self.slip):
+                    self.drive_position, self.current, self.slip, self.ext_force, self.ext_torque):
             arr[mask] = 0.0
+        self.mu_scale[mask] = 1.0
         self.battery_voltage[mask] = self.v_oc[mask]
 
     def set_motion(self, field_velocity, mask=None):
@@ -223,7 +229,7 @@ class RealisticPlant:
         hcg = self.cg_height[:, None]
         normal = (m * g / 4.0 - m * ax * hcg / (2.0 * p.wheel_base_m) * sx
                   - m * ay * hcg / (2.0 * p.track_width_m) * sy)
-        f_max = self.mu[:, None] * np.maximum(normal, 0.0)
+        f_max = self.mu[:, None] * self.mu_scale * np.maximum(normal, 0.0)
 
         # 6. 輪胎：接觸點對地速度 (機器人座標) → 輪子座標 (縱向、側向)
         heading = self.pose[:, 2]
@@ -260,6 +266,20 @@ class RealisticPlant:
         force_x = fx.sum(axis=1)
         force_y = fy.sum(axis=1)
         torque = (self.positions[:, 0] * fy - self.positions[:, 1] * fx).sum(axis=1)
+        # 外力 (碰撞、推擠、卡球阻力、牆與 HUB 接觸)：場地座標 → 機器人座標，跟輪胎力一起加總
+        ext_x = self.ext_force[:, 0].copy()
+        ext_y = self.ext_force[:, 1].copy()
+        ext_t = self.ext_torque.copy()
+        if self.contact is not None:
+            cx, cy, ct = self.contact(self)
+            ext_x += cx
+            ext_y += cy
+            ext_t += ct
+        erx, ery = field_to_robot(ext_x, ext_y, heading)
+        force_x = force_x + erx
+        force_y = force_y + ery
+        torque = torque + ext_t
+        # accel_robot 也是加速度計 (Pigeon) 量到的值，所以包含外力
         self.accel_robot[:, 0] = force_x / self.mass
         self.accel_robot[:, 1] = force_y / self.mass
         afx, afy = robot_to_field(self.accel_robot[:, 0], self.accel_robot[:, 1], heading)

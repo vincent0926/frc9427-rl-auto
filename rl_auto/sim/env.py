@@ -22,6 +22,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .chassis import RealisticPlant
+from .disturbances import Disturbances, contact_forces
 from .params import DEFAULT_PARAMS, RobotParams
 from .randomization import Randomizer, apply_physics, apply_sensors
 from .robot_software import chassis_from_modules, field_to_robot, robot_to_field, wrap_rad
@@ -30,8 +31,14 @@ from .sensors import SensorParams
 from .trajectory import Trajectory
 
 LOOKAHEAD_S = (0.25, 0.5, 1.0)
-OBS_DIM = 3 + 3 + 3 + 2 * len(LOOKAHEAD_S) + len(LOOKAHEAD_S) + 1 + 1 + 4
+OBS_DIM = 3 + 3 + 3 + 2 * len(LOOKAHEAD_S) + len(LOOKAHEAD_S) + 1 + 1 + 4  # 觀測版本 1 (v1 模型)
+OBS_DIM_V2 = OBS_DIM + 3  # 版本 2：再加加速度計 (2) 與打滑指標 (1)，用來察覺碰撞、打滑、壓到球
 ACTION_DIM = 4
+ACCEL_NOISE = 0.3  # Pigeon 加速度雜訊 (m/s²)
+
+
+def obs_dim(version: int) -> int:
+    return OBS_DIM if version == 1 else OBS_DIM_V2
 
 
 @dataclass
@@ -50,7 +57,7 @@ class SwerveAutoEnv:
                  randomize_scale: float = 1.0, use_sensors: bool = True, residual_scale: float = 1.0,
                  cross_track_limit_m: float = 0.3, finish_tolerance_m: float = 0.05,
                  max_time_factor: float = 1.5, reward: RewardConfig | None = None,
-                 params: RobotParams = DEFAULT_PARAMS):
+                 params: RobotParams = DEFAULT_PARAMS, disturbance_scale: float = 0.0, obs_version: int = 1):
         self.traj = Trajectory.load(path) if isinstance(path, str) else path
         self.n = n_envs
         self.params = params
@@ -64,6 +71,11 @@ class SwerveAutoEnv:
         self.sensor_defaults = SensorParams() if use_sensors else None
 
         self.plant = RealisticPlant(n_envs, params)
+        self.plant.contact = contact_forces  # 牆與 HUB 一直都在 (物理)，不算隨機干擾
+        self.disturbance_scale = disturbance_scale  # 碰撞、推擠、摩擦不均、壓球、卡球的強度 (0 = 沒有)
+        self.disturbances = Disturbances(n_envs, self.rng, self.traj, params.module_positions)
+        self.obs_version = obs_version
+        self.obs_dim = obs_dim(obs_version)
         self.follower = PathFollower(self.traj, n_envs, params, plant=self.plant,
                                      sensors=self.sensor_defaults, seed=seed + 1)
         self.end = np.array([self.traj.x[-1], self.traj.y[-1]])
@@ -88,6 +100,7 @@ class SwerveAutoEnv:
             apply_sensors(self.follower, self.randomizer.sample_sensors(self.n, self.sensor_defaults), mask)
         offset = self.randomizer.sample_start_offset(self.n)
         self.follower.reset(mask, start_offset=offset)
+        self.disturbances.reset(mask, self.disturbance_scale, self.plant.mass, self.plant.moi)
         pose = self.plant.pose
         _, prog, hint = self.traj.cross_track(pose[mask, 0], pose[mask, 1])
         self.ct_hint[mask] = hint
@@ -109,6 +122,7 @@ class SwerveAutoEnv:
         dvx, dvy = robot_to_field(dvx_r, dvy_r, est_heading)
         residual = np.column_stack([dvx, dvy, 1.0 * self.residual_scale * a[:, 3]])
 
+        self.disturbances.update(self.follower.time, self.plant)
         self.follower.step(time_scale, residual)
 
         pose = self.plant.pose
@@ -145,6 +159,8 @@ class SwerveAutoEnv:
             "max_cross_track": self.ep_max_ct.copy(),
             "end_error": np.where(success, end_error, np.nan),
             "done": done,
+            "events": self.disturbances.events.copy(),
+            "contact_steps": self.disturbances.contact_steps.copy(),
         }
         if done.any():
             info["final_observation"] = self._observe()
@@ -158,7 +174,7 @@ class SwerveAutoEnv:
         h = est[:, 2]
         t = self.traj
         tau = f.tau
-        obs = np.empty((self.n, OBS_DIM))
+        obs = np.empty((self.n, self.obs_dim))
         i = 0
 
         ref = t.sample(tau)
@@ -189,13 +205,32 @@ class SwerveAutoEnv:
         obs[:, i + 1] = self.plant.battery_voltage / 12.0 - 1.0
         i += 2
         obs[:, i:i + ACTION_DIM] = self.prev_action
+        i += ACTION_DIM
+        if self.obs_version >= 2:
+            # 加速度計 (Pigeon，機器人座標，含雜訊)：碰撞、推擠時會跳
+            accel = self.plant.accel_robot + self.rng.normal(0.0, ACCEL_NOISE, (self.n, 2))
+            obs[:, i:i + 2] = accel / 9.81
+            # 打滑指標：四輪實測速度向量跟「剛體運動」最小平方擬合的殘差 (m/s)。
+            # 打滑、壓到球、被撞時四輪會不一致；正常行駛時接近 0
+            obs[:, i + 2] = _module_inconsistency(self.plant.module_speed, self.plant.module_angle,
+                                                  self.params.module_positions)
         return obs
+
+
+def _module_inconsistency(speeds, angles, positions):
+    vx, vy, w = chassis_from_modules(speeds, angles, positions)
+    fit_x = vx[:, None] - w[:, None] * positions[:, 1]
+    fit_y = vy[:, None] + w[:, None] * positions[:, 0]
+    rx = speeds * np.cos(angles) - fit_x
+    ry = speeds * np.sin(angles) - fit_y
+    return np.sqrt(np.mean(rx * rx + ry * ry, axis=1))
 
 
 def evaluate_policy(env: SwerveAutoEnv, policy, episodes: int) -> dict:
     """跑到收集滿 episodes 個結束的 episode；policy(obs) → action。回傳平均指標。"""
     obs = env.reset()
-    results = {k: [] for k in ("success", "episode_time", "episode_return", "max_cross_track", "end_error")}
+    results = {k: [] for k in ("success", "episode_time", "episode_return", "max_cross_track", "end_error",
+                               "contact_steps")}
     while len(results["success"]) < episodes:
         obs, _, _, _, info = env.step(policy(obs))
         for i in np.nonzero(info["done"])[0]:
@@ -210,4 +245,5 @@ def evaluate_policy(env: SwerveAutoEnv, policy, episodes: int) -> dict:
         "mean_return": float(summary["episode_return"].mean()),
         "max_cross_track_p95": float(np.percentile(summary["max_cross_track"], 95)),
         "mean_end_error_success": float(np.nanmean(summary["end_error"][succ])) if succ.any() else float("nan"),
+        "contact_rate": float((summary["contact_steps"] > 0).mean()),  # 撞到牆或 HUB 的回合比例
     }
