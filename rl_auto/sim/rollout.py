@@ -6,6 +6,9 @@
 3. PP 控制器用「估計位姿」算速度命令，加上殘差
 4. Swerve.operate → 模組命令
 5. 物理前進一個週期
+
+sensors=None 時感測是理想的 (陀螺儀 = 真實朝向、無視覺、無延遲)；給 SensorParams 就加上
+陀螺儀漂移、命令延遲與視覺融合 (sensors.py)。
 """
 
 from __future__ import annotations
@@ -17,6 +20,8 @@ import numpy as np
 from .chassis import IdealPlant
 from .params import DEFAULT_PARAMS, RobotParams
 from .robot_software import Odometry, SwerveSoftware, pp_holonomic_controller, wrap_rad
+from .sensors import (CommandDelay, Gyro, SensorParams, VISION_MAX_YAW_RATE_RAD, VisionCamera,
+                      VisionFusion)
 from .trajectory import Trajectory
 
 
@@ -31,7 +36,8 @@ class RolloutResult:
 
 
 class PathFollower:
-    def __init__(self, trajectory: Trajectory, n_envs: int = 1, params: RobotParams = DEFAULT_PARAMS, plant=None):
+    def __init__(self, trajectory: Trajectory, n_envs: int = 1, params: RobotParams = DEFAULT_PARAMS, plant=None,
+                 sensors: SensorParams | None = None, seed: int = 0):
         self.traj = trajectory
         self.params = params
         self.n_envs = n_envs
@@ -40,6 +46,15 @@ class PathFollower:
         self.odometry = Odometry(n_envs, params)
         self.tau = np.zeros(n_envs)
         self.time = np.zeros(n_envs)
+        self.sensors = sensors
+        self.rng = np.random.default_rng(seed)
+        if sensors is not None:
+            self.gyro = Gyro(n_envs, sensors, self.rng)
+            self.delay = CommandDelay(n_envs, sensors)
+            self.camera = VisionCamera(n_envs, sensors, self.rng) if sensors.vision_enabled else None
+            self.fusion = VisionFusion(n_envs)
+        self.prev_est_heading = np.zeros(n_envs)
+        self.vision_applied = np.zeros(n_envs, dtype=int)  # 每個環境套用了幾筆視覺 (分析用)
 
     def reset(self, start_offset=None):
         """起點 = 路線起點 (+ 選用的真實位姿誤差 (N, 3))。里程計以「路線起點」重置，同 AutoBuilder.resetPose。
@@ -55,13 +70,26 @@ class PathFollower:
             self.plant.set_motion(start_velocity)
         self.software.reset()
         self.odometry.reset(start, self.plant.drive_position, self.plant.module_angle)
+        if self.sensors is not None:
+            # resetPose 把陀螺儀朝向設成路線起點朝向；之後的漂移從 0 開始累積
+            self.gyro.reset()
+            self.gyro.offset[:] = wrap_rad(start[:, 2] - true_start[:, 2])
+            self.delay.reset(self.plant.module_angle)
+            self.fusion.reset()
+            if self.camera is not None:
+                self.camera.reset()
+        self.prev_est_heading = start[:, 2].copy()
+        self.vision_applied[:] = 0
         self.tau[:] = 0.0
         self.time[:] = 0.0
 
     def step(self, time_scale=1.0, residual=None):
         """前進一個控制週期。time_scale: (N,) 時間縮放 s；residual: (N, 3) 場地座標 Δvx, Δvy, Δω。"""
         dt = self.params.cycle_time_s
-        est = self.odometry.update(self.plant.drive_position, self.plant.module_angle, self.plant.heading)
+        heading = self.plant.heading if self.sensors is None else self.gyro.read(self.plant.heading, dt)
+        est = self.odometry.update(self.plant.drive_position, self.plant.module_angle, heading)
+        if self.sensors is not None:
+            self._fuse_vision(est, dt)
 
         self.tau = np.minimum(self.tau + np.asarray(time_scale) * dt, self.traj.total_time)
         ref = self.traj.sample(self.tau, time_scale)
@@ -76,9 +104,25 @@ class PathFollower:
             w = w + residual[:, 2]
 
         angle, speed = self.software.follow_path(vx, vy, w, est[:, 2], self.plant.module_angle)
+        if self.sensors is not None:
+            angle, speed = self.delay.push(angle, speed)
         self.plant.step(angle, speed, dt)
         self.time += dt
         return est
+
+    def _fuse_vision(self, est, dt):
+        """同 RobotContainer：先記錄里程計位置 (Swerve.update)，再把收到的視覺畫面融合進去。
+        自動模式下已經 resetPose 過 (場地座標已知)，轉速 < 60°/s 才用位置；朝向只在停住時修正，路線中不會發生。
+        """
+        self.fusion.record(self.time, self.odometry)
+        yaw_rate = np.abs(wrap_rad(est[:, 2] - self.prev_est_heading)) / dt
+        self.prev_est_heading = est[:, 2].copy()
+        if self.camera is None:
+            return
+        x, y, capture, arrived = self.camera.update(self.time, self.plant.pose)
+        mask = arrived & (yaw_rate < VISION_MAX_YAW_RATE_RAD)
+        applied = self.fusion.add_measurement(self.odometry, x, y, capture, mask)
+        self.vision_applied += applied
 
     def run(self, max_time=None, finish_tolerance_m=0.05, record=False) -> RolloutResult:
         """用 s = 1、無殘差跑完整條路線 (PathPlanner 基準)。"""
