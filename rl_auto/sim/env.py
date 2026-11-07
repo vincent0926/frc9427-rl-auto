@@ -41,7 +41,7 @@ class RewardConfig:
     cross_track_per_s: float = 2.0  # 偏線懲罰：每秒扣 w·(ct / 0.1 m)²
     action_change: float = 0.05  # 動作變化懲罰 (避免抖動)
     success_bonus: float = 2.0
-    end_error_per_m: float = 20.0  # 終點誤差 (射擊位置) 每公尺扣幾分
+    end_error_per_m: float = 50.0  # 終點誤差 (射擊位置) 每公尺扣幾分；5 cm 扣 2.5 分，避免為了省時間犧牲射擊位置
     failure: float = 10.0  # 偏線超過門檻終止時扣分
 
 

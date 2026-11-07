@@ -45,50 +45,21 @@ FRC 9427 研究專題：用**強化學習（殘差策略）**讓 Swerve 自動�
 
 盲目加速能省 17% 時間但成功率掉一半；RL 要學的是「在安全的地方才加速、會打滑的地方放慢」。
 
+## 訓練與監控
+
+```bash
+.venv/Scripts/python -m pip install torch --index-url https://download.pytorch.org/whl/cpu   # 第一次
+.venv/Scripts/python scripts/train.py --path Blue3-3 --steps 30000000 --name blue3-3-v1
+.venv/Scripts/python scripts/dashboard.py        # 另一個終端機，打開 http://localhost:8765
+.venv/Scripts/python scripts/evaluate.py runs/blue3-3-v1/best.pt --episodes 1024
+```
+
+- PPO（`rl_auto/train/ppo.py`）：策略 2×64 tanh（給 roboRIO 純 Java 推論）、觀測正規化一起匯出
+- 課程學習：前 30% 只有時間縮放；隨機化範圍 30% → 100%（到一半時）；速度修正在 30%–70% 之間逐步開放
+- 每 10 次更新用固定種子評估（256 回合、完整隨機化）並跟 PathPlanner 比；`best.pt` / `policy_best.json` 是評估分數最高的
+- 監控網頁（`dashboard/`）每 3 秒更新：成功率、完成時間、偏線、獎勵、場地軌跡圖、時間縮放與車速、課程進度、訓練健康度
+- `policy_*.json`：給機器人端的模型（觀測正規化 + 權重），`tests/test_ppo.py` 確認照 JSON 算出的動作跟 PyTorch 一致
+
 ## 下一步
 
-- PPO 訓練（先只開時間縮放，再解鎖殘差），跟 B1 比
 - 安全監控器與 Java 推論（規格書 R4–R6）
-
-## 發現（已回饋到機器人程式）
-
-| 日期 | 發現 | 處理 |
-|---|---|---|
-| 2026-11-05 | 模組速度上限 4.0 m/s 會截掉路線要求的 5.0 m/s，自動一路落後 | 改用理論上限 `MaxModuleSpeedMps ≈ 4.64` |
-| 2026-11-05 | PathPlanner `driveCurrentLimit` ≤ 80 A 時生成 0 秒的壞軌跡 | 維持 95 A，加常駐測試擋住 |
-| 2026-11-05 | 里程計用週期**結束**的朝向轉換位移，邊走邊轉時累積誤差（Blue3-3 約 6 cm，不打滑也會） | 改用週期中間朝向，誤差 < 0.5 mm |
-| 2026-11-05 | Blue3-1、Blue3-3 的起點速度設 4.0 m/s，但自動第一段 / 射擊後是從靜止開始 | 實機 FollowPathCommand 會重新生成，不影響實機；匯出工具改成照自動流程判斷 |
-
-## 機器人匯出資料
-
-`data/robot-export/` 由機器人專案的 `RlExportTest` 產生，**不要手改**：
-
-- `trajectories/*.csv`：每條 PathPlanner 路線用同一份 RobotConfig 生成的軌跡（5 ms 取樣）。自動的第一段或接在射擊後面的路線從靜止生成（同 FollowPathCommand），接在另一條路線後面的用理想軌跡；`_summary.csv` 有各路線總時間與是否從靜止開始
-- `vectors/*.csv`：SwerveMath 與 `SwerveModule.setTarget` 的輸入輸出，`tests/test_java_vectors.py` 用來確認 Python 移植跟 Java 一致
-
-機器人程式或路線改了之後重新匯出（在機器人專案資料夾，Git Bash）：
-
-```bash
-RL_EXPORT=1 ./gradlew test --offline --tests "*RlExportTest*" --rerun
-cp -r build/rl-export/* <這個專案>/data/robot-export/
-```
-
-## 開發
-
-需要 Python 3.10 以上。
-
-```bash
-python -m venv .venv
-.venv/Scripts/python -m pip install -e ".[dev]"   # Windows；macOS/Linux 用 .venv/bin/python
-.venv/Scripts/python -m pytest
-```
-
-所有內部計算使用 SI 單位（m、s、kg、V、rad）。移植的機器人邏輯必須跟 Java 版行為一致；改機器人程式時要同步更新 `robot_software.py` 和測試。
-
-## 安全
-
-模擬器與策略**不直接連線機器人**。上機測試照規格書 §7 的安全流程，急停一律用 Driver Station。
-
-## 授權
-
-MIT，見 [LICENSE](LICENSE)。歡迎其他隊伍參考使用。

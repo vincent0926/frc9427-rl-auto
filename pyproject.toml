@@ -8,6 +8,7 @@ dependencies = ["numpy>=1.26"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+train = ["torch>=2.2"]
 
 [build-system]
 requires = ["setuptools>=68"]
