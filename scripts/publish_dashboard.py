@@ -55,9 +55,9 @@ def publish() -> None:
         print("沒有變更，不用推送")
         return
     stamp = time.strftime("%Y-%m-%d %H:%M")
-    commit = git("commit", "-m", f"Update training dashboard snapshot ({stamp})
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>", "--", "docs")
+    message = (f"Update training dashboard snapshot ({stamp})\n\n"
+               "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>")
+    commit = git("commit", "-m", message, "--", "docs")
     if commit.returncode != 0:
         print(commit.stdout, commit.stderr)
         return
