@@ -22,7 +22,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             self.path = "/dashboard/index.html"
-        if self.path == "/api/runs":
+        if self.path in ("/api/runs", "/dashboard/api/runs"):
             runs = []
             if RUNS.exists():
                 for d in sorted(RUNS.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):

@@ -53,13 +53,14 @@
   <h1>RL 自動路線訓練監控</h1>
   <select id="run" aria-label="選擇訓練"></select>
   <span id="state" class="state">—</span>
+  <span id="snapshot" class="small" hidden></span>
   <div class="progress">
     <div class="bar"><div id="bar"></div></div>
     <div class="small" id="progressText">—</div>
   </div>
 </header>
 <main>
-  <div id="empty" class="empty" hidden>還沒有訓練紀錄。執行 <code>python scripts/train.py</code> 開始訓練。</div>
+  <div id="empty" class="empty" hidden>還沒有訓練紀錄。執行 <code>python scripts/train.py</code> 開始訓練；要放上 GitHub 執行 <code>python scripts/publish_dashboard.py</code>。</div>
   <section class="kpis" id="kpis"></section>
   <section class="grid">
     <div class="card">
@@ -230,7 +231,14 @@ function kpis(base, evals) {
 
 async function refresh() {
   let runs = [];
-  try { runs = await getJSON("/api/runs"); } catch { return; }
+  // 本機 (scripts/dashboard.py) 用 /api/runs 即時讀；GitHub Pages 是靜態快照，讀 runs/index.json
+  let snapshot = null;
+  try { runs = await getJSON("api/runs"); }
+  catch {
+    try { snapshot = await getJSON("runs/index.json"); runs = snapshot.runs; } catch { return; }
+  }
+  $("snapshot").hidden = !snapshot;
+  if (snapshot) $("snapshot").textContent = `GitHub 快照・發布於 ${new Date(snapshot.published * 1000).toLocaleString()}`;
   $("empty").hidden = runs.length > 0;
   const sel = $("run");
   const names = runs.map(r => r.run);
@@ -247,14 +255,14 @@ async function refresh() {
   $("state").className = "state " + st.state;
   const frac = st.steps / st.total_steps;
   $("bar").style.width = (frac * 100).toFixed(1) + "%";
-  const stale = st.state === "training" && Date.now() / 1000 - st.updated > 120;
+  const stale = !snapshot && st.state === "training" && Date.now() / 1000 - st.updated > 120;
   $("progressText").textContent = `${(st.steps / 1e6).toFixed(2)} / ${(st.total_steps / 1e6).toFixed(0)} M 步（${(frac * 100).toFixed(1)}%）` +
     (st.sps ? `・${Math.round(st.sps).toLocaleString()} 步/秒` : "") +
-    (st.state === "training" ? `・剩約 ${fmtTime(st.eta_seconds)}` : "") +
+    (st.state === "training" && !snapshot ? `・剩約 ${fmtTime(st.eta_seconds)}` : "") +
     (st.state === "done" ? `・總共 ${fmtTime(st.elapsed_seconds)}` : "") +
     (stale ? "・⚠ 超過 2 分鐘沒更新，訓練可能停了" : "");
 
-  const base = `/runs/${encodeURIComponent(current)}/`;
+  const base = `runs/${encodeURIComponent(current)}/`;
   const [metrics, baseline, trace, btrace] = await Promise.all([
     getLines(base + "metrics.jsonl"),
     getJSON(base + "baseline.json").catch(() => null),
