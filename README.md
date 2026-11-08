@@ -45,6 +45,12 @@ FRC 9427 研究專題：用**強化學習（殘差策略）**讓 Swerve 自動�
 
 盲目加速能省 17% 時間但成功率掉一半；RL 要學的是「在安全的地方才加速、會打滑的地方放慢」。
 
+## 已訓練模型
+
+| 模型 | 路線 | 成功率 | 時間 | 連結 |
+|---|---|---|---|---|
+| v1 | Blue3-3 | 100%（PathPlanner 84.4%） | 7.06 s（PathPlanner 8.38 s，快 15.8%） | [models/blue3-3-v1](https://github.com/vincent0926/frc9427-rl-auto/tree/main/models/blue3-3-v1) |
+
 ## 訓練與監控
 
 ```bash
