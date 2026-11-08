@@ -45,6 +45,8 @@ FRC 9427 研究專題：用**強化學習（殘差策略）**讓 Swerve 自動�
 
 盲目加速能省 17% 時間但成功率掉一半；RL 要學的是「在安全的地方才加速、會打滑的地方放慢」。
 
+**訓練監控網頁：https://vincent0926.github.io/frc9427-rl-auto/**（GitHub Pages 快照；訓練中執行 `scripts/publish_dashboard.py --watch 5` 每 5 分鐘自動更新）
+
 ## 已訓練模型
 
 | 模型 | 路線 | 成功率 | 時間 | 連結 |
@@ -56,7 +58,8 @@ FRC 9427 研究專題：用**強化學習（殘差策略）**讓 Swerve 自動�
 ```bash
 .venv/Scripts/python -m pip install torch --index-url https://download.pytorch.org/whl/cpu   # 第一次
 .venv/Scripts/python scripts/train.py --path Blue3-3 --steps 30000000 --name blue3-3-v1
-.venv/Scripts/python scripts/dashboard.py        # 另一個終端機，打開 http://localhost:8765
+.venv/Scripts/python scripts/dashboard.py        # 本機即時版：打開 http://localhost:8765
+.venv/Scripts/python scripts/publish_dashboard.py --watch 5   # GitHub 版：每 5 分鐘推一次快照
 .venv/Scripts/python scripts/evaluate.py runs/blue3-3-v1/best.pt --episodes 1024
 ```
 
