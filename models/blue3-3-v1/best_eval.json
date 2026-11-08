@@ -1,0 +1,14 @@
+{
+  "episodes": 256,
+  "success_rate": 1.0,
+  "mean_time_success": 7.0581249999999365,
+  "mean_return": 2.835350635973118,
+  "max_cross_track_p95": 0.14930270388872036,
+  "mean_end_error_success": 0.03761319842357515,
+  "type": "eval",
+  "update": 740,
+  "steps": 24248320,
+  "residual_scale": 1.0,
+  "score": 2.835350635973118,
+  "wall_time": 1794074855.9002469
+}
